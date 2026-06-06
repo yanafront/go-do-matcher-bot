@@ -19,6 +19,10 @@ RUN adduser -D -u 10001 appuser && \
     chown -R appuser:appuser /app
 
 USER appuser
-VOLUME ["/app/data"]
+
+ENV DATA_DIR=/app/data
+ENV PORT=8080
+
+EXPOSE 8080
 
 ENTRYPOINT ["/app/bot"]
