@@ -263,9 +263,29 @@ func (b *Bot) sendVacancy(chatID int64, name string, channelMsgID int, text stri
 	if len([]rune(body)) > 3500 {
 		body = string([]rune(body)[:3500]) + "…"
 	}
-	msg := fmt.Sprintf("%s, кажется, это тебе подходит 🎯\n\n%s\n\n👉 %s",
-		name, body, b.cfg.ChannelLink(channelMsgID))
-	return b.sendText(chatID, msg, menuActive())
+	link := b.cfg.ChannelLink(channelMsgID)
+	msg := fmt.Sprintf("%s, кажется, это тебе подходит 🎯\n\n%s\n\n<a href=\"%s\">Еще больше вакансий в канале</a>",
+		escapeHTML(name), escapeHTML(body), link)
+	return b.sendHTML(chatID, msg, menuActive())
+}
+
+func (b *Bot) sendHTML(chatID int64, text string, kb interface{}) error {
+	m := tgbotapi.NewMessage(chatID, text)
+	m.ParseMode = tgbotapi.ModeHTML
+	m.DisableWebPagePreview = true
+	if kb != nil {
+		m.ReplyMarkup = kb
+	}
+	_, err := b.api.Send(m)
+	return err
+}
+
+func escapeHTML(s string) string {
+	return strings.NewReplacer(
+		"&", "&amp;",
+		"<", "&lt;",
+		">", "&gt;",
+	).Replace(s)
 }
 
 func (b *Bot) sendText(chatID int64, text string, kb interface{}) error {
