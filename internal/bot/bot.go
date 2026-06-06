@@ -67,9 +67,26 @@ func (b *Bot) handlePrivateMessage(msg *tgbotapi.Message) {
 			b.stop(chatID)
 			return
 		case "help":
-			b.send(chatID, "Команды:\n/start — заново\n/profile — сменить имя или должность\n/stop — отписаться")
+			b.help(chatID)
 			return
 		}
+	}
+
+	if text == btnStart {
+		b.start(chatID)
+		return
+	}
+	if text == btnProfile {
+		b.askProfile(chatID)
+		return
+	}
+	if text == btnStop {
+		b.stop(chatID)
+		return
+	}
+	if text == btnHelp {
+		b.help(chatID)
+		return
 	}
 
 	user, ok := b.st.GetUser(chatID)
@@ -80,19 +97,25 @@ func (b *Bot) handlePrivateMessage(msg *tgbotapi.Message) {
 
 	switch user.State {
 	case stateAskName:
+		if isButtonAction(text) {
+			return
+		}
 		name := trimName(text)
 		if name == "" {
-			b.send(chatID, "Напиши, пожалуйста, как тебя зовут 🙂")
+			b.sendText(chatID, "Напиши, пожалуйста, как тебя зовут 🙂", menuHidden())
 			return
 		}
 		user.Name = name
 		user.State = stateAskQuery
 		_ = b.st.SaveUser(user)
-		b.send(chatID, fmt.Sprintf("Приятно познакомиться, %s! 👋\n\nКакую должность ищешь?\nНапример: продавец, официант, водитель, кассир", name))
+		b.sendText(chatID, fmt.Sprintf("Приятно познакомиться, %s! 👋\n\nКакую должность ищешь?\nНапример: продавец, официант, водитель, кассир", name), menuHidden())
 	case stateAskQuery:
+		if isButtonAction(text) {
+			return
+		}
 		query := strings.TrimSpace(text)
 		if len([]rune(query)) < 2 {
-			b.send(chatID, "Напиши должность чуть подробнее — хотя бы одно слово 🙂")
+			b.sendText(chatID, "Напиши должность чуть подробнее — хотя бы одно слово 🙂", menuHidden())
 			return
 		}
 		user.Query = query
@@ -104,10 +127,14 @@ func (b *Bot) handlePrivateMessage(msg *tgbotapi.Message) {
 			zap.String("name", user.Name),
 			zap.String("query", query),
 		)
-		b.send(chatID, fmt.Sprintf("Отлично, %s! Буду присылать вакансии по запросу «%s» из канала @%s.\n\n/profile — изменить\n/stop — отписаться", user.Name, query, b.cfg.ChannelUsername))
+		b.sendText(chatID, fmt.Sprintf("Отлично, %s! Буду присылать вакансии по запросу «%s» из канала @%s.", user.Name, query, b.cfg.ChannelUsername), menuActive())
 		b.sendRecentMatches(chatID, user)
 	case stateReady:
-		b.send(chatID, "Я уже знаю твой запрос. Хочешь изменить — /profile\nОтписаться — /stop")
+		if user.Active {
+			b.sendText(chatID, "Используй кнопки ниже 👇", menuActive())
+		} else {
+			b.sendText(chatID, "Ты отписан. Нажми «Начать», чтобы снова получать вакансии.", menuStopped())
+		}
 	default:
 		b.start(chatID)
 	}
@@ -120,7 +147,7 @@ func (b *Bot) start(chatID int64) {
 		Active: true,
 	}
 	_ = b.st.SaveUser(u)
-	b.send(chatID, "Привет! 👋 Я подбираю вакансии из нашего канала под твой запрос.\n\nКак тебя зовут?")
+	b.sendText(chatID, "Привет! 👋 Я подбираю вакансии из нашего канала под твой запрос.\n\nКак тебя зовут?", menuHidden())
 }
 
 func (b *Bot) askProfile(chatID int64) {
@@ -132,7 +159,7 @@ func (b *Bot) askProfile(chatID int64) {
 	u.State = stateAskName
 	u.Query = ""
 	_ = b.st.SaveUser(u)
-	b.send(chatID, "Давай обновим профиль. Как тебя зовут?")
+	b.sendText(chatID, "Давай обновим профиль. Как тебя зовут?", menuHidden())
 }
 
 func (b *Bot) stop(chatID int64) {
@@ -142,7 +169,17 @@ func (b *Bot) stop(chatID int64) {
 		u.State = stateReady
 		_ = b.st.SaveUser(u)
 	}
-	b.send(chatID, "Хорошо, больше не буду присылать вакансии. Вернуться — /start")
+	b.sendText(chatID, "Хорошо, больше не буду присылать вакансии.", menuStopped())
+}
+
+func (b *Bot) help(chatID int64) {
+	u, ok := b.st.GetUser(chatID)
+	text := "Кнопки:\n▶️ Начать — подписаться на вакансии\n👤 Профиль — сменить имя или должность\n⏹ Отписаться — перестать получать вакансии"
+	if ok && u.Active && u.State == stateReady {
+		b.sendText(chatID, text, menuActive())
+		return
+	}
+	b.sendText(chatID, text, menuStopped())
 }
 
 func (b *Bot) handleChannelPost(msg *tgbotapi.Message) {
@@ -217,7 +254,7 @@ func (b *Bot) sendRecentMatches(chatID int64, user store.User) {
 		time.Sleep(400 * time.Millisecond)
 	}
 	if sent == 0 {
-		b.send(chatID, "Пока нет подходящих вакансий в последних публикациях — пришлю, как только появится новая!")
+		b.sendText(chatID, "Пока нет подходящих вакансий в последних публикациях — пришлю, как только появится новая!", menuActive())
 	}
 }
 
@@ -228,12 +265,15 @@ func (b *Bot) sendVacancy(chatID int64, name string, channelMsgID int, text stri
 	}
 	msg := fmt.Sprintf("%s, кажется, это тебе подходит 🎯\n\n%s\n\n👉 %s",
 		name, body, b.cfg.ChannelLink(channelMsgID))
-	return b.send(chatID, msg)
+	return b.sendText(chatID, msg, menuActive())
 }
 
-func (b *Bot) send(chatID int64, text string) error {
+func (b *Bot) sendText(chatID int64, text string, kb interface{}) error {
 	m := tgbotapi.NewMessage(chatID, text)
 	m.DisableWebPagePreview = false
+	if kb != nil {
+		m.ReplyMarkup = kb
+	}
 	_, err := b.api.Send(m)
 	return err
 }
