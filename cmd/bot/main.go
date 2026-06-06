@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -16,6 +17,8 @@ import (
 )
 
 func main() {
+	loadDotEnv(".env")
+
 	log, _ := zap.NewProduction()
 	defer log.Sync()
 
@@ -111,5 +114,28 @@ func runWebhook(ctx context.Context, cfg *config.Config, b *bot.Bot, log *zap.Lo
 	}()
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal("http", zap.Error(err))
+	}
+}
+
+func loadDotEnv(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		i := strings.IndexByte(line, '=')
+		if i <= 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:i])
+		val := strings.TrimSpace(line[i+1:])
+		val = strings.Trim(val, `"'`)
+		if os.Getenv(key) == "" {
+			os.Setenv(key, val)
+		}
 	}
 }

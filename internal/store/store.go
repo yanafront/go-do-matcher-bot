@@ -140,10 +140,10 @@ func (s *Store) ActiveUsers() []User {
 
 func (s *Store) AddVacancy(v Vacancy) (bool, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.ensure()
 	for _, existing := range s.data.Vacancies {
 		if existing.ChannelMsgID == v.ChannelMsgID {
+			s.mu.Unlock()
 			return false, nil
 		}
 	}
@@ -158,8 +158,12 @@ func (s *Store) AddVacancy(v Vacancy) (bool, error) {
 func (s *Store) RecentVacancies(limit int) []Vacancy {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if limit <= 0 || limit > len(s.data.Vacancies) {
-		limit = len(s.data.Vacancies)
+	n := len(s.data.Vacancies)
+	if n == 0 {
+		return nil
+	}
+	if limit <= 0 || limit > n {
+		limit = n
 	}
 	out := make([]Vacancy, limit)
 	copy(out, s.data.Vacancies[:limit])
