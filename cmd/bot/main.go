@@ -47,11 +47,37 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	if cfg.WebhookURL != "" {
+	go startHealthServer(ctx, log)
+
+	if cfg.WebhookURL != "" && os.Getenv("USE_WEBHOOK") == "1" {
 		runWebhook(ctx, cfg, b, log)
 		return
 	}
+	if _, err := b.API().Request(tgbotapi.DeleteWebhookConfig{DropPendingUpdates: false}); err != nil {
+		log.Warn("delete webhook", zap.Error(err))
+	}
 	runPolling(ctx, b, log)
+}
+
+func startHealthServer(ctx context.Context, log *zap.Logger) {
+	port := os.Getenv("PORT")
+	if port == "" {
+		return
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	srv := &http.Server{Addr: ":" + port, Handler: mux}
+	go func() {
+		<-ctx.Done()
+		_ = srv.Shutdown(context.Background())
+	}()
+	log.Info("health server", zap.String("port", port))
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Warn("health server", zap.Error(err))
+	}
 }
 
 func runPolling(ctx context.Context, b *bot.Bot, log *zap.Logger) {

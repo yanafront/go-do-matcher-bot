@@ -99,6 +99,11 @@ func (b *Bot) handlePrivateMessage(msg *tgbotapi.Message) {
 		user.State = stateReady
 		user.Active = true
 		_ = b.st.SaveUser(user)
+		b.log.Info("user registered",
+			zap.Int64("chat_id", chatID),
+			zap.String("name", user.Name),
+			zap.String("query", query),
+		)
 		b.send(chatID, fmt.Sprintf("Отлично, %s! Буду присылать вакансии по запросу «%s» из канала @%s.\n\n/profile — изменить\n/stop — отписаться", user.Name, query, b.cfg.ChannelUsername))
 		b.sendRecentMatches(chatID, user)
 	case stateReady:
@@ -162,10 +167,13 @@ func (b *Bot) handleChannelPost(msg *tgbotapi.Message) {
 }
 
 func (b *Bot) notifyMatchingUsers(channelMsgID int, text string) {
-	for _, u := range b.st.ActiveUsers() {
+	users := b.st.ActiveUsers()
+	var matched, sent int
+	for _, u := range users {
 		if !match.Fits(u.Query, text) {
 			continue
 		}
+		matched++
 		if b.st.WasSent(u.ChatID, channelMsgID) {
 			continue
 		}
@@ -178,7 +186,14 @@ func (b *Bot) notifyMatchingUsers(channelMsgID int, text string) {
 			continue
 		}
 		_ = b.st.MarkSent(u.ChatID, channelMsgID)
+		sent++
 	}
+	b.log.Info("vacancy processed",
+		zap.Int("msg_id", channelMsgID),
+		zap.Int("active_users", len(users)),
+		zap.Int("matched", matched),
+		zap.Int("sent", sent),
+	)
 }
 
 func (b *Bot) sendRecentMatches(chatID int64, user store.User) {
