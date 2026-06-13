@@ -58,13 +58,13 @@ func (b *Bot) handlePrivateMessage(msg *tgbotapi.Message) {
 	if msg.IsCommand() {
 		switch msg.Command() {
 		case "start":
-			b.start(chatID)
+			b.start(msg)
 			return
 		case "profile":
-			b.askProfile(chatID)
+			b.askProfile(msg)
 			return
 		case "stop":
-			b.stop(chatID)
+			b.stop(msg)
 			return
 		case "help":
 			b.help(chatID)
@@ -73,15 +73,15 @@ func (b *Bot) handlePrivateMessage(msg *tgbotapi.Message) {
 	}
 
 	if text == btnStart {
-		b.start(chatID)
+		b.start(msg)
 		return
 	}
 	if text == btnProfile {
-		b.askProfile(chatID)
+		b.askProfile(msg)
 		return
 	}
 	if text == btnStop {
-		b.stop(chatID)
+		b.stop(msg)
 		return
 	}
 	if text == btnHelp {
@@ -91,9 +91,10 @@ func (b *Bot) handlePrivateMessage(msg *tgbotapi.Message) {
 
 	user, ok := b.st.GetUser(chatID)
 	if !ok || user.State == "" {
-		b.start(chatID)
+		b.start(msg)
 		return
 	}
+	b.syncTelegramAccount(&user, msg)
 
 	switch user.State {
 	case stateAskName:
@@ -136,35 +137,61 @@ func (b *Bot) handlePrivateMessage(msg *tgbotapi.Message) {
 			b.sendText(chatID, "Ты отписан. Нажми «Начать», чтобы снова получать вакансии.", menuStopped())
 		}
 	default:
-		b.start(chatID)
+		b.start(msg)
 	}
 }
 
-func (b *Bot) start(chatID int64) {
+func (b *Bot) syncTelegramAccount(u *store.User, msg *tgbotapi.Message) {
+	if msg.From == nil {
+		return
+	}
+	from := msg.From
+	u.TelegramUserID = from.ID
+	u.Username = from.UserName
+	u.FirstName = from.FirstName
+	u.LastName = from.LastName
+	u.LanguageCode = from.LanguageCode
+	if u.FirstSeen == "" {
+		u.FirstSeen = time.Now().UTC().Format(time.RFC3339)
+	}
+}
+
+func (b *Bot) start(msg *tgbotapi.Message) {
+	chatID := msg.Chat.ID
 	u := store.User{
 		ChatID: chatID,
 		State:  stateAskName,
 		Active: true,
 	}
+	b.syncTelegramAccount(&u, msg)
 	_ = b.st.SaveUser(u)
+	b.log.Info("telegram account",
+		zap.Int64("chat_id", chatID),
+		zap.Int64("telegram_user_id", u.TelegramUserID),
+		zap.String("username", u.Username),
+	)
 	b.sendText(chatID, "Привет! 👋 Я подбираю вакансии из нашего канала под твой запрос.\n\nКак тебя зовут?", menuHidden())
 }
 
-func (b *Bot) askProfile(chatID int64) {
+func (b *Bot) askProfile(msg *tgbotapi.Message) {
+	chatID := msg.Chat.ID
 	u, ok := b.st.GetUser(chatID)
 	if !ok {
-		b.start(chatID)
+		b.start(msg)
 		return
 	}
+	b.syncTelegramAccount(&u, msg)
 	u.State = stateAskName
 	u.Query = ""
 	_ = b.st.SaveUser(u)
 	b.sendText(chatID, "Давай обновим профиль. Как тебя зовут?", menuHidden())
 }
 
-func (b *Bot) stop(chatID int64) {
+func (b *Bot) stop(msg *tgbotapi.Message) {
+	chatID := msg.Chat.ID
 	u, ok := b.st.GetUser(chatID)
 	if ok {
+		b.syncTelegramAccount(&u, msg)
 		u.Active = false
 		u.State = stateReady
 		_ = b.st.SaveUser(u)

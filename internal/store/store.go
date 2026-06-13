@@ -10,12 +10,18 @@ import (
 )
 
 type User struct {
-	ChatID   int64  `json:"chat_id"`
-	Name     string `json:"name"`
-	Query    string `json:"query"`
-	State    string `json:"state"`
-	Active   bool   `json:"active"`
-	Updated  string `json:"updated"`
+	ChatID         int64  `json:"chat_id"`
+	TelegramUserID int64  `json:"telegram_user_id,omitempty"`
+	Username       string `json:"username,omitempty"`
+	FirstName      string `json:"first_name,omitempty"`
+	LastName       string `json:"last_name,omitempty"`
+	LanguageCode   string `json:"language_code,omitempty"`
+	Name           string `json:"name"`
+	Query          string `json:"query"`
+	State          string `json:"state"`
+	Active         bool   `json:"active"`
+	FirstSeen      string `json:"first_seen,omitempty"`
+	Updated        string `json:"updated"`
 }
 
 type Vacancy struct {
@@ -123,6 +129,17 @@ func (s *Store) SaveUser(u User) error {
 	s.data.Users[userKey(u.ChatID)] = u
 	s.mu.Unlock()
 	return s.save()
+}
+
+func (s *Store) AllUsers() []User {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensure()
+	out := make([]User, 0, len(s.data.Users))
+	for _, u := range s.data.Users {
+		out = append(out, u)
+	}
+	return out
 }
 
 func (s *Store) ActiveUsers() []User {
