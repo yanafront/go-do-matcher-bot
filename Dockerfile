@@ -14,15 +14,8 @@ RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
 COPY --from=builder /bot /app/bot
 
-RUN adduser -D -u 10001 appuser && \
-    mkdir -p /app/data && \
-    chown -R appuser:appuser /app
+RUN adduser -D -u 10001 appuser && chown -R appuser:appuser /app
 
 USER appuser
-
-ENV DATA_DIR=/app/data
-ENV PORT=8080
-
-EXPOSE 8080
 
 ENTRYPOINT ["/app/bot"]

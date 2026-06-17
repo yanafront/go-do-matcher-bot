@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -12,7 +10,8 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/anadubesko/go-do-matcher-bot/internal/bot"
 	"github.com/anadubesko/go-do-matcher-bot/internal/config"
-	"github.com/anadubesko/go-do-matcher-bot/internal/store"
+	"github.com/anadubesko/go-do-matcher-bot/internal/db"
+	"github.com/anadubesko/go-do-matcher-bot/internal/repository"
 	"go.uber.org/zap"
 )
 
@@ -27,13 +26,14 @@ func main() {
 		log.Fatal("config", zap.Error(err))
 	}
 
-	st, err := store.Open(cfg.DataDir)
+	database, err := db.Open(cfg.DatabaseURL)
 	if err != nil {
-		log.Fatal("store", zap.Error(err))
+		log.Fatal("database", zap.Error(err))
 	}
-	defer st.Close()
+	defer database.Close()
 
-	b, err := bot.New(cfg, st, log)
+	repo := repository.New(database.DB)
+	b, sched, err := bot.New(cfg, repo, log)
 	if err != nil {
 		log.Fatal("bot", zap.Error(err))
 	}
@@ -47,43 +47,15 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	go startHealthServer(ctx, log)
+	go sched.Run(ctx)
 
-	if cfg.WebhookURL != "" && os.Getenv("USE_WEBHOOK") == "1" {
-		runWebhook(ctx, cfg, b, log)
-		return
-	}
 	if _, err := b.API().Request(tgbotapi.DeleteWebhookConfig{DropPendingUpdates: false}); err != nil {
 		log.Warn("delete webhook", zap.Error(err))
 	}
-	runPolling(ctx, b, log)
-}
 
-func startHealthServer(ctx context.Context, log *zap.Logger) {
-	port := os.Getenv("PORT")
-	if port == "" {
-		return
-	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
-	srv := &http.Server{Addr: ":" + port, Handler: mux}
-	go func() {
-		<-ctx.Done()
-		_ = srv.Shutdown(context.Background())
-	}()
-	log.Info("health server", zap.String("port", port))
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Warn("health server", zap.Error(err))
-	}
-}
-
-func runPolling(ctx context.Context, b *bot.Bot, log *zap.Logger) {
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 30
-	u.AllowedUpdates = []string{"message", "channel_post"}
+	u.AllowedUpdates = []string{"message", "callback_query"}
 
 	updates := b.API().GetUpdatesChan(u)
 	log.Info("polling mode")
@@ -97,49 +69,8 @@ func runPolling(ctx context.Context, b *bot.Bot, log *zap.Logger) {
 			if !ok {
 				return
 			}
-			b.HandleUpdate(upd)
+			b.HandleUpdate(ctx, upd)
 		}
-	}
-}
-
-func runWebhook(ctx context.Context, cfg *config.Config, b *bot.Bot, log *zap.Logger) {
-	wh, err := tgbotapi.NewWebhook(cfg.WebhookURL)
-	if err != nil {
-		log.Fatal("webhook", zap.Error(err))
-	}
-	wh.AllowedUpdates = []string{"message", "channel_post"}
-	if _, err := b.API().Request(wh); err != nil {
-		log.Fatal("set webhook", zap.Error(err))
-	}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
-	mux.HandleFunc("/webhook", func(w http.ResponseWriter, r *http.Request) {
-		var upd tgbotapi.Update
-		if err := json.NewDecoder(r.Body).Decode(&upd); err != nil {
-			http.Error(w, "bad request", http.StatusBadRequest)
-			return
-		}
-		b.HandleUpdate(upd)
-		w.WriteHeader(http.StatusOK)
-	})
-
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-	log.Info("webhook mode", zap.String("url", cfg.WebhookURL), zap.String("port", port))
-
-	srv := &http.Server{Addr: ":" + port, Handler: mux}
-	go func() {
-		<-ctx.Done()
-		_ = srv.Shutdown(context.Background())
-	}()
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatal("http", zap.Error(err))
 	}
 }
 
