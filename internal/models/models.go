@@ -22,15 +22,19 @@ const (
 )
 
 type User struct {
-	ID         uuid.UUID
-	TgID       int64
-	Username   string
-	Role       string
-	Name       string
-	City       string
-	Phone      string
-	DesiredJob string
-	CreatedAt  time.Time
+	ID              uuid.UUID
+	TgID            int64
+	Username        string
+	Role            string
+	Name            string
+	City            string
+	Phone           string
+	DesiredJob      string
+	MatchesReceived int
+	JobsCompleted   int
+	SearchActive    bool
+	HiringPaused    bool
+	CreatedAt       time.Time
 }
 
 type Vacancy struct {
@@ -43,9 +47,23 @@ type Vacancy struct {
 	NeededCount int
 	FilledCount int
 	Status      string
+	Collecting  bool
 	StartDate   *time.Time
 	CreatedAt   time.Time
 }
+
+func ApplicationLimit(neededCount int) int {
+	limit := neededCount * 2
+	if limit < 10 {
+		limit = 10
+	}
+	if limit > 150 {
+		limit = 150
+	}
+	return limit
+}
+
+const MaxShiftSize = 100
 
 type Application struct {
 	ID          uuid.UUID

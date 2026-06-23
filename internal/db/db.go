@@ -40,10 +40,19 @@ func Open(databaseURL string) (*DB, error) {
 }
 
 func (db *DB) migrate() error {
-	raw, err := migrationsFS.ReadFile("migrations/001_init.sql")
-	if err != nil {
-		return err
+	files := []string{
+		"migrations/001_init.sql",
+		"migrations/002_user_stats.sql",
+		"migrations/003_pause_collecting.sql",
 	}
-	_, err = db.Exec(string(raw))
-	return err
+	for _, name := range files {
+		raw, err := migrationsFS.ReadFile(name)
+		if err != nil {
+			return err
+		}
+		if _, err := db.Exec(string(raw)); err != nil {
+			return err
+		}
+	}
+	return nil
 }

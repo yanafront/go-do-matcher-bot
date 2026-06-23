@@ -12,14 +12,15 @@ import (
 )
 
 type MatchNotification struct {
-	MatchID     string
-	CandidateID int64
-	Title       string
-	Description string
-	City        string
-	Salary      int
-	Score       float64
-	VacancyID   string
+	MatchID       string
+	CandidateID   int64
+	CandidateUUID string
+	Title         string
+	Description   string
+	City          string
+	Salary        int
+	Score         float64
+	VacancyID     string
 }
 
 type MatchService struct {
@@ -91,6 +92,23 @@ func (s *ApplicationService) Apply(ctx context.Context, vacancyID, candidateID u
 	if v == nil || v.Status != models.VacancyOpen {
 		return nil, fmt.Errorf("vacancy is not open")
 	}
+	if !v.Collecting {
+		return nil, fmt.Errorf("vacancy is not collecting")
+	}
+	employer, err := s.repo.GetUserByID(ctx, v.EmployerID)
+	if err != nil {
+		return nil, err
+	}
+	if employer != nil && employer.HiringPaused {
+		return nil, fmt.Errorf("employer paused hiring")
+	}
+	candidate, err := s.repo.GetUserByID(ctx, candidateID)
+	if err != nil {
+		return nil, err
+	}
+	if candidate != nil && !candidate.SearchActive {
+		return nil, fmt.Errorf("candidate search paused")
+	}
 	if _, err := s.repo.CreateApplication(ctx, vacancyID, candidateID); err != nil {
 		return nil, err
 	}
@@ -98,18 +116,58 @@ func (s *ApplicationService) Apply(ctx context.Context, vacancyID, candidateID u
 	if err != nil {
 		return nil, err
 	}
+	var result *models.ApplicationView
 	for _, a := range apps {
 		if a.CandidateID == candidateID {
-			return &a, nil
+			result = &a
+			break
 		}
 	}
-	return nil, fmt.Errorf("application not found")
+	if result == nil {
+		return nil, fmt.Errorf("application not found")
+	}
+	if err := s.maybeAutoPauseVacancy(ctx, v); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func (s *ApplicationService) maybeAutoPauseVacancy(ctx context.Context, v *models.Vacancy) error {
+	count, err := s.repo.CountActiveApplications(ctx, v.ID)
+	if err != nil {
+		return err
+	}
+	if count < models.ApplicationLimit(v.NeededCount) {
+		return nil
+	}
+	return s.repo.SetVacancyCollecting(ctx, v.ID, false)
+}
+
+func (s *ApplicationService) Accept(ctx context.Context, applicationID uuid.UUID) (*models.ApplicationView, error) {
+	app, err := s.repo.GetApplication(ctx, applicationID)
+	if err != nil {
+		return nil, err
+	}
+	if app.Status == models.AppAccepted {
+		return app, nil
+	}
+	if app.Status != models.AppSent {
+		return nil, fmt.Errorf("application cannot be accepted")
+	}
+	if err := s.repo.UpdateApplicationStatus(ctx, applicationID, models.AppAccepted); err != nil {
+		return nil, err
+	}
+	app.Status = models.AppAccepted
+	return app, nil
 }
 
 func (s *ApplicationService) Hire(ctx context.Context, applicationID uuid.UUID) (*models.ApplicationView, *models.Vacancy, error) {
 	app, err := s.repo.GetApplication(ctx, applicationID)
 	if err != nil {
 		return nil, nil, err
+	}
+	if app.Status != models.AppAccepted && app.Status != models.AppHired {
+		return nil, nil, fmt.Errorf("application must be accepted first")
 	}
 	if app.Status == models.AppHired {
 		v, err := s.repo.GetVacancy(ctx, app.VacancyID)
@@ -122,8 +180,18 @@ func (s *ApplicationService) Hire(ctx context.Context, applicationID uuid.UUID) 
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := s.repo.IncrementJobsCompleted(ctx, app.CandidateID); err != nil {
+		return nil, nil, err
+	}
+	if err := s.repo.IncrementJobsCompleted(ctx, app.EmployerID); err != nil {
+		return nil, nil, err
+	}
 	app.Status = models.AppHired
 	return app, v, nil
+}
+
+func (s *ApplicationService) Get(ctx context.Context, applicationID uuid.UUID) (*models.ApplicationView, error) {
+	return s.repo.GetApplication(ctx, applicationID)
 }
 
 func (s *ApplicationService) Reject(ctx context.Context, applicationID uuid.UUID) error {
@@ -162,6 +230,24 @@ func (s *VacancyService) Get(ctx context.Context, id uuid.UUID) (*models.Vacancy
 	return s.repo.GetVacancy(ctx, id)
 }
 
+func (s *VacancyService) MaybeResumeCollecting(ctx context.Context, vacancyID uuid.UUID) (bool, error) {
+	v, err := s.repo.GetVacancy(ctx, vacancyID)
+	if err != nil || v == nil {
+		return false, err
+	}
+	if v.Status != models.VacancyOpen || v.Collecting || v.FilledCount >= v.NeededCount {
+		return false, nil
+	}
+	if err := s.repo.SetVacancyCollecting(ctx, vacancyID, true); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *VacancyService) CountHired(ctx context.Context, vacancyID uuid.UUID) (int, error) {
+	return s.repo.CountHiredApplications(ctx, vacancyID)
+}
+
 type UserService struct {
 	repo *repository.Repository
 }
@@ -176,6 +262,54 @@ func (s *UserService) GetByTgID(ctx context.Context, tgID int64) (*models.User, 
 
 func (s *UserService) Save(ctx context.Context, u *models.User) error {
 	return s.repo.UpsertUser(ctx, u)
+}
+
+func (s *UserService) IncrementMatchesReceived(ctx context.Context, userID uuid.UUID) error {
+	return s.repo.IncrementMatchesReceived(ctx, userID)
+}
+
+func (s *VacancyService) SetCollecting(ctx context.Context, vacancyID uuid.UUID, collecting bool) error {
+	return s.repo.SetVacancyCollecting(ctx, vacancyID, collecting)
+}
+
+func (s *VacancyService) ActiveApplicationCount(ctx context.Context, vacancyID uuid.UUID) (int, error) {
+	return s.repo.CountActiveApplications(ctx, vacancyID)
+}
+
+func (s *UserService) GetByID(ctx context.Context, id uuid.UUID) (*models.User, error) {
+	return s.repo.GetUserByID(ctx, id)
+}
+
+func (s *UserService) SetSearchActive(ctx context.Context, userID uuid.UUID, active bool) error {
+	return s.repo.SetSearchActive(ctx, userID, active)
+}
+
+func (s *UserService) SetHiringPaused(ctx context.Context, userID uuid.UUID, paused bool) error {
+	return s.repo.SetHiringPaused(ctx, userID, paused)
+}
+
+func (s *UserService) ToggleSearch(ctx context.Context, tgID int64) (bool, error) {
+	u, err := s.repo.GetUserByTgID(ctx, tgID)
+	if err != nil || u == nil {
+		return false, err
+	}
+	next := !u.SearchActive
+	if err := s.repo.SetSearchActive(ctx, u.ID, next); err != nil {
+		return false, err
+	}
+	return next, nil
+}
+
+func (s *UserService) ToggleHiringPaused(ctx context.Context, tgID int64) (bool, error) {
+	u, err := s.repo.GetUserByTgID(ctx, tgID)
+	if err != nil || u == nil {
+		return false, err
+	}
+	next := !u.HiringPaused
+	if err := s.repo.SetHiringPaused(ctx, u.ID, next); err != nil {
+		return false, err
+	}
+	return next, nil
 }
 
 func (s *UserService) Rating(ctx context.Context, userID uuid.UUID) (float64, int, error) {

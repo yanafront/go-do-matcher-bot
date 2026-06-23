@@ -68,14 +68,15 @@ func (s *Scheduler) tick(ctx context.Context) {
 			continue
 		}
 		if err := s.notifier.SendMatch(ctx, services.MatchNotification{
-			MatchID:     claimed.ID.String(),
-			CandidateID: claimed.CandidateTgID,
-			Title:       claimed.VacancyTitle,
-			Description: claimed.VacancyDescription,
-			City:        claimed.VacancyCity,
-			Salary:      claimed.VacancySalary,
-			Score:       claimed.Score,
-			VacancyID:   claimed.VacancyID.String(),
+			MatchID:       claimed.ID.String(),
+			CandidateID:   claimed.CandidateTgID,
+			CandidateUUID: claimed.CandidateID.String(),
+			Title:         claimed.VacancyTitle,
+			Description:   claimed.VacancyDescription,
+			City:          claimed.VacancyCity,
+			Salary:        claimed.VacancySalary,
+			Score:         claimed.Score,
+			VacancyID:     claimed.VacancyID.String(),
 		}); err != nil {
 			s.log.Warn("send match",
 				zap.String("match_id", claimed.ID.String()),

@@ -21,7 +21,7 @@ func New(db *sql.DB) *Repository {
 
 func (r *Repository) GetUserByTgID(ctx context.Context, tgID int64) (*models.User, error) {
 	row := r.db.QueryRowContext(ctx, `
-SELECT id, tg_id, username, role, name, city, phone, desired_job, created_at
+SELECT id, tg_id, username, role, name, city, phone, desired_job, matches_received, jobs_completed, search_active, hiring_paused, created_at
 FROM users WHERE tg_id = $1
 `, tgID)
 	return scanUser(row)
@@ -29,7 +29,7 @@ FROM users WHERE tg_id = $1
 
 func (r *Repository) GetUserByID(ctx context.Context, id uuid.UUID) (*models.User, error) {
 	row := r.db.QueryRowContext(ctx, `
-SELECT id, tg_id, username, role, name, city, phone, desired_job, created_at
+SELECT id, tg_id, username, role, name, city, phone, desired_job, matches_received, jobs_completed, search_active, hiring_paused, created_at
 FROM users WHERE id = $1
 `, id)
 	return scanUser(row)
@@ -58,9 +58,9 @@ ON CONFLICT (tg_id) DO UPDATE SET
 
 func (r *Repository) ListCandidates(ctx context.Context) ([]models.User, error) {
 	rows, err := r.db.QueryContext(ctx, `
-SELECT id, tg_id, username, role, name, city, phone, desired_job, created_at
+SELECT id, tg_id, username, role, name, city, phone, desired_job, matches_received, jobs_completed, search_active, hiring_paused, created_at
 FROM users
-WHERE role = 'candidate' AND name <> '' AND city <> '' AND desired_job <> '' AND phone <> ''
+WHERE role = 'candidate' AND name <> '' AND city <> '' AND desired_job <> '' AND phone <> '' AND search_active = TRUE
 `)
 	if err != nil {
 		return nil, err
@@ -71,8 +71,10 @@ WHERE role = 'candidate' AND name <> '' AND city <> '' AND desired_job <> '' AND
 
 func (r *Repository) ListOpenVacancies(ctx context.Context) ([]models.Vacancy, error) {
 	rows, err := r.db.QueryContext(ctx, `
-SELECT id, employer_id, title, description, city, salary, needed_count, filled_count, status, start_date, created_at
-FROM vacancies WHERE status = 'open'
+SELECT v.id, v.employer_id, v.title, v.description, v.city, v.salary, v.needed_count, v.filled_count, v.status, v.collecting, v.start_date, v.created_at
+FROM vacancies v
+JOIN users u ON u.id = v.employer_id
+WHERE v.status = 'open' AND v.collecting = TRUE AND u.hiring_paused = FALSE
 `)
 	if err != nil {
 		return nil, err
@@ -83,7 +85,7 @@ FROM vacancies WHERE status = 'open'
 
 func (r *Repository) GetVacancy(ctx context.Context, id uuid.UUID) (*models.Vacancy, error) {
 	row := r.db.QueryRowContext(ctx, `
-SELECT id, employer_id, title, description, city, salary, needed_count, filled_count, status, start_date, created_at
+SELECT id, employer_id, title, description, city, salary, needed_count, filled_count, status, collecting, start_date, created_at
 FROM vacancies WHERE id = $1
 `, id)
 	return scanVacancy(row)
@@ -96,16 +98,20 @@ func (r *Repository) CreateVacancy(ctx context.Context, v *models.Vacancy) error
 	if v.CreatedAt.IsZero() {
 		v.CreatedAt = time.Now().UTC()
 	}
+	if v.Status == "" {
+		v.Status = models.VacancyOpen
+	}
+	v.Collecting = true
 	_, err := r.db.ExecContext(ctx, `
-INSERT INTO vacancies (id, employer_id, title, description, city, salary, needed_count, filled_count, status, start_date, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-`, v.ID, v.EmployerID, v.Title, v.Description, v.City, v.Salary, v.NeededCount, v.FilledCount, v.Status, v.StartDate, v.CreatedAt)
+INSERT INTO vacancies (id, employer_id, title, description, city, salary, needed_count, filled_count, status, collecting, start_date, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+`, v.ID, v.EmployerID, v.Title, v.Description, v.City, v.Salary, v.NeededCount, v.FilledCount, v.Status, v.Collecting, v.StartDate, v.CreatedAt)
 	return err
 }
 
 func (r *Repository) ListEmployerVacancies(ctx context.Context, employerID uuid.UUID) ([]models.Vacancy, error) {
 	rows, err := r.db.QueryContext(ctx, `
-SELECT id, employer_id, title, description, city, salary, needed_count, filled_count, status, start_date, created_at
+SELECT id, employer_id, title, description, city, salary, needed_count, filled_count, status, collecting, start_date, created_at
 FROM vacancies WHERE employer_id = $1 ORDER BY created_at DESC
 `, employerID)
 	if err != nil {
@@ -116,7 +122,7 @@ FROM vacancies WHERE employer_id = $1 ORDER BY created_at DESC
 }
 
 func (r *Repository) CloseVacancy(ctx context.Context, vacancyID uuid.UUID) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE vacancies SET status = 'closed' WHERE id = $1`, vacancyID)
+	_, err := r.db.ExecContext(ctx, `UPDATE vacancies SET status = 'closed', collecting = FALSE WHERE id = $1`, vacancyID)
 	return err
 }
 
@@ -131,17 +137,18 @@ func (r *Repository) IncrementFilledCount(ctx context.Context, vacancyID uuid.UU
 	row := tx.QueryRowContext(ctx, `
 UPDATE vacancies SET filled_count = filled_count + 1
 WHERE id = $1 AND status = 'open'
-RETURNING id, employer_id, title, description, city, salary, needed_count, filled_count, status, start_date, created_at
+RETURNING id, employer_id, title, description, city, salary, needed_count, filled_count, status, collecting, start_date, created_at
 `, vacancyID)
 	v, err = scanVacancyRow(row)
 	if err != nil {
 		return nil, err
 	}
 	if v.FilledCount >= v.NeededCount {
-		if _, err := tx.ExecContext(ctx, `UPDATE vacancies SET status = 'closed' WHERE id = $1`, vacancyID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE vacancies SET status = 'closed', collecting = FALSE WHERE id = $1`, vacancyID); err != nil {
 			return nil, err
 		}
 		v.Status = models.VacancyClosed
+		v.Collecting = false
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
@@ -210,9 +217,9 @@ SELECT m.id, m.vacancy_id, m.candidate_id, m.score, m.sent, m.created_at,
        c.tg_id, e.tg_id
 FROM matches m
 JOIN vacancies v ON v.id = m.vacancy_id
-JOIN users c ON c.id = m.candidate_id
+JOIN users c ON c.id = m.candidate_id AND c.search_active = TRUE
 JOIN users e ON e.id = v.employer_id
-WHERE m.sent = FALSE AND v.status = 'open'
+WHERE m.sent = FALSE AND v.status = 'open' AND v.collecting = TRUE AND e.hiring_paused = FALSE
 ORDER BY m.score DESC, m.created_at ASC
 `)
 	if err != nil {
@@ -313,6 +320,14 @@ ORDER BY a.created_at DESC
 		out = append(out, av)
 	}
 	return out, rows.Err()
+}
+
+func (r *Repository) CountHiredApplications(ctx context.Context, vacancyID uuid.UUID) (int, error) {
+	var n int
+	err := r.db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM applications WHERE vacancy_id = $1 AND status = 'hired'
+`, vacancyID).Scan(&n)
+	return n, err
 }
 
 func (r *Repository) UpdateApplicationStatus(ctx context.Context, id uuid.UUID, status string) error {
@@ -419,9 +434,50 @@ WHERE m.id = $1
 	return &mv, nil
 }
 
+func (r *Repository) SetSearchActive(ctx context.Context, userID uuid.UUID, active bool) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE users SET search_active = $2 WHERE id = $1`, userID, active)
+	return err
+}
+
+func (r *Repository) SetHiringPaused(ctx context.Context, userID uuid.UUID, paused bool) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE users SET hiring_paused = $2 WHERE id = $1`, userID, paused)
+	return err
+}
+
+func (r *Repository) SetVacancyCollecting(ctx context.Context, vacancyID uuid.UUID, collecting bool) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE vacancies SET collecting = $2 WHERE id = $1`, vacancyID, collecting)
+	return err
+}
+
+func (r *Repository) CountActiveApplications(ctx context.Context, vacancyID uuid.UUID) (int, error) {
+	var n int
+	err := r.db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM applications
+WHERE vacancy_id = $1 AND status IN ('sent', 'accepted')
+`, vacancyID).Scan(&n)
+	return n, err
+}
+
+func (r *Repository) IncrementMatchesReceived(ctx context.Context, userID uuid.UUID) error {
+	_, err := r.db.ExecContext(ctx, `
+UPDATE users SET matches_received = matches_received + 1 WHERE id = $1
+`, userID)
+	return err
+}
+
+func (r *Repository) IncrementJobsCompleted(ctx context.Context, userID uuid.UUID) error {
+	_, err := r.db.ExecContext(ctx, `
+UPDATE users SET jobs_completed = jobs_completed + 1 WHERE id = $1
+`, userID)
+	return err
+}
+
 func scanUser(row *sql.Row) (*models.User, error) {
 	var u models.User
-	err := row.Scan(&u.ID, &u.TgID, &u.Username, &u.Role, &u.Name, &u.City, &u.Phone, &u.DesiredJob, &u.CreatedAt)
+	err := row.Scan(
+		&u.ID, &u.TgID, &u.Username, &u.Role, &u.Name, &u.City, &u.Phone, &u.DesiredJob,
+		&u.MatchesReceived, &u.JobsCompleted, &u.SearchActive, &u.HiringPaused, &u.CreatedAt,
+	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -435,7 +491,10 @@ func scanUsers(rows *sql.Rows) ([]models.User, error) {
 	var out []models.User
 	for rows.Next() {
 		var u models.User
-		if err := rows.Scan(&u.ID, &u.TgID, &u.Username, &u.Role, &u.Name, &u.City, &u.Phone, &u.DesiredJob, &u.CreatedAt); err != nil {
+		if err := rows.Scan(
+			&u.ID, &u.TgID, &u.Username, &u.Role, &u.Name, &u.City, &u.Phone, &u.DesiredJob,
+			&u.MatchesReceived, &u.JobsCompleted, &u.SearchActive, &u.HiringPaused, &u.CreatedAt,
+		); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
@@ -459,7 +518,7 @@ func scanVacancyRow(row interface {
 }) (models.Vacancy, error) {
 	var v models.Vacancy
 	var start sql.NullTime
-	err := row.Scan(&v.ID, &v.EmployerID, &v.Title, &v.Description, &v.City, &v.Salary, &v.NeededCount, &v.FilledCount, &v.Status, &start, &v.CreatedAt)
+	err := row.Scan(&v.ID, &v.EmployerID, &v.Title, &v.Description, &v.City, &v.Salary, &v.NeededCount, &v.FilledCount, &v.Status, &v.Collecting, &start, &v.CreatedAt)
 	if err != nil {
 		return v, err
 	}
