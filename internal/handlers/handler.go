@@ -111,6 +111,7 @@ func (h *Handler) handleMenu(ctx context.Context, msg *tgbotapi.Message) {
 		h.handleStart(ctx, msg)
 		return
 	}
+	_ = h.session.Clear(ctx, msg.Chat.ID)
 	h.sendRoleHome(ctx, msg.Chat.ID, user)
 }
 
@@ -214,6 +215,12 @@ func (h *Handler) handleCallback(ctx context.Context, q *tgbotapi.CallbackQuery)
 		h.toggleSearch(ctx, chatID)
 	case data == "menu:toggle_hiring":
 		h.toggleHiring(ctx, chatID)
+	case data == "menu:edit_job":
+		h.beginEditJob(ctx, chatID)
+	case data == "menu:switch_employer":
+		h.switchToEmployer(ctx, chatID, q.From)
+	case data == "menu:switch_candidate":
+		h.switchToCandidate(ctx, chatID, q.From)
 	case strings.HasPrefix(data, "rate_prompt:"):
 		h.handleRatePrompt(ctx, chatID, strings.TrimPrefix(data, "rate_prompt:"))
 	case strings.HasPrefix(data, "menu:hired:"):
@@ -289,8 +296,17 @@ func (h *Handler) saveCandidateJob(ctx context.Context, msg *tgbotapi.Message, j
 		h.handleStart(ctx, msg)
 		return
 	}
+	sess, _ := h.session.Get(ctx, msg.Chat.ID)
 	user.DesiredJob = job
 	_ = h.users.Save(ctx, user)
+	if sess != nil && sess.Data["edit_job"] == "1" {
+		_ = h.session.Clear(ctx, msg.Chat.ID)
+		h.sendText(msg.Chat.ID, fmt.Sprintf(
+			"Готово! Теперь ищешь: <b>%s</b>\n\nБуду присылать подходящие вакансии.",
+			escape(job),
+		), h.candidateKB(ctx, msg.Chat.ID))
+		return
+	}
 	_ = h.session.SetStep(ctx, msg.Chat.ID, StepCandidatePhone, nil)
 	h.sendText(msg.Chat.ID, "Последний шаг — номер телефона. Работодатель увидит его только после одобрения отклика.", contactKeyboard())
 }
@@ -747,6 +763,74 @@ func (h *Handler) handleCloseVacancy(ctx context.Context, chatID int64, vacancyI
 	}
 }
 
+func (h *Handler) beginEditJob(ctx context.Context, chatID int64) {
+	user, _ := h.users.GetByTgID(ctx, chatID)
+	if user == nil || user.Role != models.RoleCandidate {
+		return
+	}
+	_ = h.session.SetStep(ctx, chatID, StepCandidateJob, map[string]string{"edit_job": "1"})
+	h.sendText(chatID, fmt.Sprintf(
+		"Сейчас ищешь: <b>%s</b>\n\nНапиши новую должность.\nНапример: продавец, курьер, кассир",
+		escape(user.DesiredJob),
+	), nil)
+}
+
+func (h *Handler) switchToEmployer(ctx context.Context, chatID int64, from *tgbotapi.User) {
+	user, _ := h.users.GetByTgID(ctx, chatID)
+	if user == nil {
+		h.startEmployer(ctx, chatID, from)
+		return
+	}
+	if from != nil && from.UserName != "" {
+		user.Username = from.UserName
+	}
+	user.Role = models.RoleEmployer
+	_ = h.users.Save(ctx, user)
+	_ = h.session.Clear(ctx, chatID)
+	if h.profileComplete(user) {
+		h.sendText(chatID, "Переключились в режим <b>работодателя</b> 💼\n\nМожно создавать вакансии и смотреть отклики.", h.employerKB(ctx, chatID))
+		return
+	}
+	_ = h.session.SetStep(ctx, chatID, StepEmployerName, nil)
+	h.sendText(chatID, "Как называется компания или как к тебе обращаться?", nil)
+}
+
+func (h *Handler) switchToCandidate(ctx context.Context, chatID int64, from *tgbotapi.User) {
+	user, _ := h.users.GetByTgID(ctx, chatID)
+	if user == nil {
+		h.startCandidate(ctx, chatID, from)
+		return
+	}
+	if from != nil && from.UserName != "" {
+		user.Username = from.UserName
+	}
+	user.Role = models.RoleCandidate
+	_ = h.users.Save(ctx, user)
+	_ = h.session.Clear(ctx, chatID)
+	if h.profileComplete(user) {
+		h.sendText(chatID, "Переключились в режим <b>соискателя</b> 🔍\n\nБуду присылать подходящие вакансии.", h.candidateKB(ctx, chatID))
+		return
+	}
+	h.continueCandidateProfile(ctx, chatID, user)
+}
+
+func (h *Handler) continueCandidateProfile(ctx context.Context, chatID int64, user *models.User) {
+	switch {
+	case user.Name == "":
+		_ = h.session.SetStep(ctx, chatID, StepCandidateName, nil)
+		h.sendText(chatID, "Как тебя зовут? 🙂", nil)
+	case user.City == "":
+		_ = h.session.SetStep(ctx, chatID, StepCandidateCity, nil)
+		h.sendText(chatID, "В каком городе ищешь работу?", nil)
+	case user.DesiredJob == "":
+		_ = h.session.SetStep(ctx, chatID, StepCandidateJob, nil)
+		h.sendText(chatID, "Какую должность ищешь?\nНапример: продавец, курьер, кассир", nil)
+	default:
+		_ = h.session.SetStep(ctx, chatID, StepCandidatePhone, nil)
+		h.sendText(chatID, "Нужен номер телефона — работодатель увидит его только после одобрения отклика.", contactKeyboard())
+	}
+}
+
 func (h *Handler) toggleSearch(ctx context.Context, chatID int64) {
 	active, err := h.users.ToggleSearch(ctx, chatID)
 	if err != nil {
@@ -1108,7 +1192,7 @@ func (h *Handler) sendRoleHome(ctx context.Context, chatID int64, user *models.U
 			searchLine = "⏸ поиск на паузе"
 		}
 		h.sendText(chatID, fmt.Sprintf(
-			"Привет, %s! 👋\n\n📍 %s · ищешь: %s\n%s\n📊 Подобрано: %d · Выполнено работ: %d\n\nЖди уведомления или поставь поиск на паузу.",
+			"Привет, %s! 👋\n\n📍 %s · ищешь: %s\n%s\n📊 Подобрано: %d · Выполнено работ: %d\n\nПрофессию можно сменить кнопкой ниже. Хочешь нанимать — «Нанимаю».",
 			user.Name, user.City, user.DesiredJob, searchLine, user.MatchesReceived, user.JobsCompleted,
 		), h.candidateKB(ctx, chatID))
 	case models.RoleEmployer:
@@ -1128,7 +1212,7 @@ func (h *Handler) sendRoleHome(ctx context.Context, chatID int64, user *models.U
 			hiringLine = "⏸ все вакансии на паузе"
 		}
 		h.sendText(chatID, fmt.Sprintf(
-			"Привет, %s! 👋\n\n📍 %s\n%s\n📊 Открытых вакансий: %d (на паузе: %d) · Закрыто заданий: %d\n\nКаждая вакансия управляется отдельно в «Мои вакансии».",
+			"Привет, %s! 👋\n\n📍 %s\n%s\n📊 Открытых вакансий: %d (на паузе: %d) · Закрыто заданий: %d\n\nВакансии — в «Мои вакансии». Ищешь работу — кнопка «Ищу работу».",
 			user.Name, user.City, hiringLine, active, paused, user.JobsCompleted,
 		), h.employerKB(ctx, chatID))
 	}

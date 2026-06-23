@@ -20,6 +20,12 @@ func candidateMenuKeyboard(searchActive bool) tgbotapi.InlineKeyboardMarkup {
 	}
 	return tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(toggle),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✏️ Сменить профессию", "menu:edit_job"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("💼 Нанимаю", "menu:switch_employer"),
+		),
 	)
 }
 
@@ -46,6 +52,9 @@ func employerMenuKeyboard(hiringPaused bool) tgbotapi.InlineKeyboardMarkup {
 			tgbotapi.NewInlineKeyboardButtonData("📋 Мои вакансии", "menu:my_vacancies"),
 		),
 		tgbotapi.NewInlineKeyboardRow(toggle),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🔍 Ищу работу", "menu:switch_candidate"),
+		),
 	)
 }
 
